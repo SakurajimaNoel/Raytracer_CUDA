@@ -12,8 +12,22 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 }
 
 
+__device__ bool hit_sphere(const point3& center, float radius, const ray& r)
+{
+    vec3 oc = r.origin() - center;
+    float a =  dot(r.direction(), r.direction());
+    float b = 2.0f * dot(oc, r.direction());
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - 4 * a * c;
+    return (discriminant > 0);
+}
+
+
+
 __device__ color ray_color(const ray& r)
 {
+    if (hit_sphere(point3(0, 0, -1), 0.5, r))
+        return color(1, 0, 0);
     vec3 unit_direction = unit_vector(r.direction());
     float t = 0.5f * (unit_direction.y() + 1.0f);
     return (1.0f - t) * color(1.0, 1.0, 1.0) + t * color(0.5, 0.7, 1.0);
@@ -46,9 +60,10 @@ __global__ void render(vec3* fb, int img_w, int img_h, vec3 btm_lft_crnr, vec3 h
 
 int main()
 {
-    const int image_width = 256;
-    const int image_height = 256;
     const double aspect_ratio = 16.0 / 9.0;
+    const uint32_t image_width = 1920;
+    const uint32_t image_height = 1080;
+    
   
     float viewport_height = 2.0;
     float viewport_width = aspect_ratio * viewport_height;
@@ -72,9 +87,10 @@ int main()
     dim3 blocks(image_width / thread_x + 1, image_height / thread_y + 1);
     dim3 threads(thread_x, thread_y);
     
-    uint8_t pixel_array[CHANNEL_NUM * image_width * image_height]{};
+    //uint8_t* pixel_array = new uint8_t [CHANNEL_NUM * image_width * image_height];
 
-    //auto res = std::make_unique<uint8_t[]>(3 * image_width * image_height);
+    std::unique_ptr<uint8_t[]>pixel_array = std::make_unique<uint8_t[]>(CHANNEL_NUM * image_width * image_height);
+
     render << <blocks,threads >> > (frame_buffer, image_width, image_height, lower_left_corner, horizontal, vertical, origin);
 
    
@@ -100,8 +116,7 @@ int main()
     checkCudaErrors(cudaFree(frame_buffer));
 
 
-    int val = stbi_write_png("image.png", image_width, image_height, CHANNEL_NUM,&pixel_array, image_width * CHANNEL_NUM);
-   
+    int val = stbi_write_png("image.png", image_width, image_height, CHANNEL_NUM,pixel_array.get(), image_width * CHANNEL_NUM);
     return 0;
 }
 
