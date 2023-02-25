@@ -80,9 +80,15 @@
     <CudaCompile Include="main.cu" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="camera.cuh" />
     <ClInclude Include="color.cuh" />
+    <ClInclude Include="hittable.cuh" />
+    <ClInclude Include="hittablelist.cuh" />
     <ClInclude Include="main.cuh" />
-    <ClInclude Include="ray.cuh" />
+    <ClInclude Include="ray.cuh">
+      <DeploymentContent>false</DeploymentContent>
+    </ClInclude>
+    <ClInclude Include="sphere.cuh" />
     <ClInclude Include="vec3.cuh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -12,30 +12,49 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 }
 
 
-__device__ bool hit_sphere(const point3& center, float radius, const ray& r)
-{
-    vec3 oc = r.origin() - center;
-    float a =  dot(r.direction(), r.direction());
-    float b = 2.0f * dot(oc, r.direction());
-    float c = dot(oc, oc) - radius * radius;
-    float discriminant = b * b - 4 * a * c;
-    return (discriminant > 0);
+#define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
+
+__device__ vec3 random_in_hemisphere(const vec3& normal, curandState* local_rand_state) {
+    vec3 p;
+    do {
+        p = 2.0f * RANDVEC3 - vec3(1, 1, 1);
+    } while (p.length_squared() >= 1.0f);
+    if (dot(p, normal) > 0.0) 
+        return p;
+    else
+        return -p;
 }
 
 
 
-__device__ color ray_color(const ray& r)
+__device__ color ray_color(const ray& r, hittable **world, curandState *rand_state)
 {
-    if (hit_sphere(point3(0, 0, -1), 0.5, r))
-        return color(1, 0, 0);
-    vec3 unit_direction = unit_vector(r.direction());
-    float t = 0.5f * (unit_direction.y() + 1.0f);
-    return (1.0f - t) * color(1.0, 1.0, 1.0) + t * color(0.5, 0.7, 1.0);
+    ray cur_ray = r;
+    float cur_attenuation = 1.0f;
+    for (int i = 0; i < 50; i++)
+    {
+        hit_record rec;
+        if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) 
+        {
+            vec3 target = rec.p + random_in_hemisphere(rec.normal, rand_state);
+            cur_attenuation *= 0.5f;
+            cur_ray = ray(rec.p, target - rec.p);
+        }
+        else
+        {
+            vec3 unit_direction = unit_vector(r.direction());
+            float t = 0.5f * (unit_direction.y() + 1.0f);
+            color c = (1.0f - t) * color(1.0, 1.0, 1.0) + t * color(0.5, 0.7, 1.0);
+            return cur_attenuation * c;
+        }
+    }
+       
+    return color(0.0f,0.0f,0.0f);
+   
 }
 
 
-
-__global__ void render(vec3* fb, int img_w, int img_h, vec3 btm_lft_crnr, vec3 horizontal, vec3 vertical, vec3 origin)
+__global__ void render(vec3* fb, int img_w, int img_h,int sample_size, camera **cam, hittable **world)
 {
     int i = threadIdx.x + (blockIdx.x * blockDim.x);
     int j = threadIdx.y + (blockIdx.y * blockDim.y);
@@ -44,18 +63,45 @@ __global__ void render(vec3* fb, int img_w, int img_h, vec3 btm_lft_crnr, vec3 h
 
     int pixel_index = j * img_w + i;
     
-    float u = float(i) / float(img_w);
-    float v = float(j) / float(img_h);
+    curandState rand_state;
+    curand_init(1984, pixel_index, 0, &rand_state);
 
-    ray r(origin, btm_lft_crnr + u * horizontal + v * vertical);
-
-    fb[pixel_index] = ray_color(r);
+    color col(0, 0, 0);
+    
+    for (int s = 0; s < sample_size; s++)
+    {
+        float u = float(i + curand_uniform(&rand_state)) / float(img_w);
+        float v = float(j + curand_uniform(&rand_state)) / float(img_h);
+        ray r = (*cam)->get_ray(u, v);
+        col += ray_color(r, world, &rand_state);
+    }
+    col /= float(sample_size);
+    col[0] = sqrt(col[0]);
+    col[1] = sqrt(col[1]);
+    col[2] = sqrt(col[2]);
+    fb[pixel_index] = col;
+ 
 }
 
 
+__global__ void create_world(hittable** list, hittable** world, camera **cam)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0)
+    {
+        *(list) = new sphere(vec3(0, 0, -1), 0.5);
+        *(list + 1) = new sphere(vec3(0, -100.5, -1), 100);
+        *world = new hittable_list(list, 2);
+        *cam = new camera();
+    }
+}
 
-
-
+__global__ void free_world(hittable** list, hittable** world, camera** cam)
+{
+    delete* (list);
+    delete* (list + 1);
+    delete* world;
+    delete* cam;
+}
 
 
 int main()
@@ -63,16 +109,8 @@ int main()
     const double aspect_ratio = 16.0 / 9.0;
     const uint32_t image_width = 1920;
     const uint32_t image_height = 1080;
-    
-  
-    float viewport_height = 2.0;
-    float viewport_width = aspect_ratio * viewport_height;
-    float focal_length = 1.0;
-
-    point3 origin = point3(0, 0, 0);
-    vec3 horizontal = vec3(viewport_width, 0, 0);
-    vec3 vertical = vec3(0, viewport_height, 0);
-    point3 lower_left_corner = origin - horizontal / 2 - vertical / 2 - vec3(0, 0, focal_length);
+    const uint32_t sample_size = 100;
+ 
 
 
     size_t frame_buffer_size = image_width * image_height * sizeof(vec3);
@@ -80,6 +118,21 @@ int main()
     vec3* frame_buffer;
 
     checkCudaErrors(cudaMallocManaged(reinterpret_cast<void**>(&frame_buffer), frame_buffer_size));
+
+
+    hittable** list;
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&list), 2 * sizeof(hittable*)));
+    hittable** world;
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&world), sizeof(hittable*)));
+    camera** cam;
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&cam), sizeof(camera*)));
+    create_world << <1, 1 >> > (list, world,cam);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+
+
+
 
     int thread_x = 8;
     int thread_y = 8;
@@ -91,7 +144,7 @@ int main()
 
     std::unique_ptr<uint8_t[]>pixel_array = std::make_unique<uint8_t[]>(CHANNEL_NUM * image_width * image_height);
 
-    render << <blocks,threads >> > (frame_buffer, image_width, image_height, lower_left_corner, horizontal, vertical, origin);
+    render << <blocks,threads >> > (frame_buffer, image_width, image_height, sample_size, cam ,world);
 
    
 
@@ -113,10 +166,18 @@ int main()
             pixel_array[index++] = ib;
         }
     }
-    checkCudaErrors(cudaFree(frame_buffer));
-
-
+   
     int val = stbi_write_png("image.png", image_width, image_height, CHANNEL_NUM,pixel_array.get(), image_width * CHANNEL_NUM);
+    
+    checkCudaErrors(cudaDeviceSynchronize());
+    free_world << <1, 1 >> > (list, world,cam);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaFree(cam));
+    checkCudaErrors(cudaFree(list));
+    checkCudaErrors(cudaFree(world));
+    checkCudaErrors(cudaFree(frame_buffer));
+    cudaDeviceReset();
+
     return 0;
 }
 
