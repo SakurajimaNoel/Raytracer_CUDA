@@ -85,6 +85,7 @@
     <ClInclude Include="hittable.cuh" />
     <ClInclude Include="hittablelist.cuh" />
     <ClInclude Include="main.cuh" />
+    <ClInclude Include="material.cuh" />
     <ClInclude Include="ray.cuh">
       <DeploymentContent>false</DeploymentContent>
     </ClInclude>

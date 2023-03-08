@@ -12,37 +12,31 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 }
 
 
-#define RANDVEC3 vec3(curand_uniform(local_rand_state),curand_uniform(local_rand_state),curand_uniform(local_rand_state))
-
-__device__ vec3 random_in_hemisphere(const vec3& normal, curandState* local_rand_state) {
-    vec3 p;
-    do {
-        p = 2.0f * RANDVEC3 - vec3(1, 1, 1);
-    } while (p.length_squared() >= 1.0f);
-    if (dot(p, normal) > 0.0) 
-        return p;
-    else
-        return -p;
-}
-
-
 
 __device__ color ray_color(const ray& r, hittable **world, curandState *rand_state)
 {
     ray cur_ray = r;
-    float cur_attenuation = 1.0f;
+    vec3 cur_attenuation = vec3(1.0f,1.0f,1.0f);
     for (int i = 0; i < 50; i++)
     {
         hit_record rec;
         if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) 
         {
-            vec3 target = rec.p + random_in_hemisphere(rec.normal, rand_state);
-            cur_attenuation *= 0.5f;
-            cur_ray = ray(rec.p, target - rec.p);
+            ray scattered;
+            vec3 attenuation;
+            if (rec.mat_ptr->scatter(cur_ray,rec, attenuation, scattered, rand_state))
+            {
+                cur_attenuation = cur_attenuation * attenuation;
+                cur_ray = scattered;
+            }
+            else
+            {
+                return vec3(0.0, 0.0, 0.0);
+            }
         }
         else
         {
-            vec3 unit_direction = unit_vector(r.direction());
+            vec3 unit_direction = unit_vector(cur_ray.direction());
             float t = 0.5f * (unit_direction.y() + 1.0f);
             color c = (1.0f - t) * color(1.0, 1.0, 1.0) + t * color(0.5, 0.7, 1.0);
             return cur_attenuation * c;
@@ -84,21 +78,30 @@ __global__ void render(vec3* fb, int img_w, int img_h,int sample_size, camera **
 }
 
 
-__global__ void create_world(hittable** list, hittable** world, camera **cam)
+__global__ void create_world(hittable** list, hittable** world, camera **cam, int img_width, int img_height)
 {
     if (threadIdx.x == 0 && blockIdx.x == 0)
     {
-        *(list) = new sphere(vec3(0, 0, -1), 0.5);
-        *(list + 1) = new sphere(vec3(0, -100.5, -1), 100);
-        *world = new hittable_list(list, 2);
-        *cam = new camera();
+        list[0] = new sphere(vec3(0, 0, -1), 0.5, new lambertian(vec3(0.8, 0.3, 0.3)));
+        list[1] = new sphere(vec3(0, -100.5, -1), 100, new lambertian(vec3(0.8, 0.8, 0.0)));
+        list[2] = new sphere(vec3(1, 0, -1), 0.5, new metal(vec3(0.8, 0.6, 0.2), 1.0));
+        list[3] = new sphere(vec3(-1, 0, -1), 0.5, new dielectric(1.5));
+        list[4] = new sphere(vec3(-1, 0, -1), -0.4, new dielectric(1.5));
+        *world = new hittable_list(list, 4);
+        *cam = new camera(vec3(-2, 2, 1),
+            vec3(0, 0, -1),
+            vec3(0, 1, 0),
+            20.0,
+            float(img_width) / float(img_height));
     }
 }
 
 __global__ void free_world(hittable** list, hittable** world, camera** cam)
 {
-    delete* (list);
-    delete* (list + 1);
+    for (int i = 0; i < 5; i++) {
+        delete ((sphere*)list[i])->mat_ptr;
+        delete list[i];
+    }
     delete* world;
     delete* cam;
 }
@@ -126,7 +129,7 @@ int main()
     checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&world), sizeof(hittable*)));
     camera** cam;
     checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&cam), sizeof(camera*)));
-    create_world << <1, 1 >> > (list, world,cam);
+    create_world << <1, 1 >> > (list, world,cam, image_width, image_height);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 

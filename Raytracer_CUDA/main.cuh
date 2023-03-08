@@ -13,5 +13,6 @@
 #include "hittablelist.cuh"
 #include "sphere.cuh"
 #include "camera.cuh"
+#include "material.cuh"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
